@@ -95,6 +95,18 @@ namespace camera_subscriber {
             // ROS2 subscription
             rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_subscription_;
 
+            // Frame buffer with thread safety
+            mutable std::mutex frame_mutex_;
+            std::queue<cv::Mat> frame_queue_;
+            size_t max_queue_size_;
+
+            // Frame metadata for synchronization
+            struct FrameMetadata {
+                uint32_t sequence;
+                double timestamp;
+            };
+            std::queue<FrameMetadata> metadata_queue_;
+
     };
 
 };
