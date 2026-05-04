@@ -22,7 +22,7 @@ namespace camera_subscriber {
         // Reference:
         //      - https://docs.ros.org/en/iron/Concepts/Intermediate/About-Quality-of-Service-Settings.html
         //      - https://docs.ros2.org/foxy/api/rclcpp/classrclcpp_1_1QoS.html
-        
+
         auto qos_profile = rclcpp::QoS(rclcpp::KeepLast(queue_size))
             .best_effort()
             .durability_volatile();
@@ -39,4 +39,59 @@ namespace camera_subscriber {
 
     };
 
-}
+    void ROS2ImageSubscriber::image_callback(
+        const sensor_msgs::msg::Image::SharedPtr msg
+    ) {
+
+        // Check incoming msg
+        if (!msg) {
+            RCLCPP_WARN(get_logger(), "Received null image message");
+            return;
+        };
+        {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.frames_received++;
+            stats_.last_encoding = msg->encoding;
+        };
+
+        // Convert ROS2 msg => OpenCV img
+        cv::Mat cv_image = convert_ros2_image_to_opencv(msg);
+
+        if (cv_image.empty()) {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.conversion_errors++;
+            RCLCPP_WARN(
+                get_logger(), 
+                "Failed to convert ROS2 image to OpenCV (encoding: %s)",
+                msg->encoding.c_str()
+            );
+            return;
+        };
+
+        // Store frame in queue with thread safety
+        {
+            std::lock_guard<std::mutex> lock(frame_mutex_);
+
+            // Check if queue at cap
+            // If full, drop oldest frame and metadata
+            if (frame_queue_.size() >= max_queue_size_) {
+                frame_queue_.pop();
+                metadata_queue_.pop();
+                
+                std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+                stats_.frames_dropped++;
+            }
+
+            // Add new frame to queue
+            frame_queue_.push(cv_image.clone()); // Clone to ensure independent memory
+            
+            // Store metadata
+            FrameMetadata metadata;
+            metadata.sequence = msg->header.stamp.sec;
+            metadata.timestamp = static_cast<double>(msg->header.stamp.sec) +
+                                 static_cast<double>(msg->header.stamp.nanosec) / 1e9;
+            metadata_queue_.push(metadata);
+        }
+    }
+
+}; // namespace camera_subscriber
