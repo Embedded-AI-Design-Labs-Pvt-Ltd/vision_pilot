@@ -7,10 +7,8 @@ namespace camera_subscriber {
         const std::string &topic_name,
         size_t queue_size,
         const std::string &node_name
-    ) : (
-        rclcpp::Node(node_name),
-        max_queue_size(queue_size)
-    ) {
+    ) : rclcpp::Node(node_name),
+        max_queue_size(queue_size) {
         
         RCLCPP_INFO(get_logger(), "Initializing ROS2 Image Subscriber");
         RCLCPP_INFO(get_logger(), "  Topic: %s", topic_name.c_str());
@@ -78,7 +76,7 @@ namespace camera_subscriber {
             // If full, drop oldest frame and metadata
             if (frame_queue.size() >= max_queue_size) {
                 frame_queue.pop();
-                metadata_queue_.pop();
+                metadata_queue.pop();
                 
                 std::lock_guard<std::mutex> stats_lock(stats_mutex);
                 stats.frames_dropped++;
@@ -135,22 +133,23 @@ namespace camera_subscriber {
     };
 
 
-    cv::Mat ROS2ImageSubscriber::get_latest_frame() 
+    std::tuple<bool, cv::Mat> ROS2ImageSubscriber::get_latest_frame() 
     {
 
         std::lock_guard<std::mutex> lock(frame_mutex);
-        // Return empty Mat if no frames available
-        bool is_valid_frame = true;
+        
+        // Check if frame queue is empty
         if (frame_queue.empty()) {
-            is_valid_frame = false;
-        } else {
-            // Fetch latest frame and corresponding metadata
-            cv::Mat latest_frame = frame_queue.front();
-            frame_queue.pop();
-            metadata_queue.pop();
+            return std::make_tuple(false, cv::Mat());
         }
 
-        return {is_valid_frame, latest_frame};
+        // Fetch latest frame and corresponding metadata
+        cv::Mat latest_frame = frame_queue.front();
+        frame_queue.pop();
+        metadata_queue.pop();
+
+        // Frame is valid
+        return std::make_tuple(true, latest_frame);
 
     };
 
@@ -169,6 +168,10 @@ namespace camera_subscriber {
 
     size_t ROS2ImageSubscriber::get_max_queue_size() const {
         return max_queue_size;
+    };
+
+    bool ROS2ImageSubscriber::is_stream_active() const {
+        return is_stream_started;
     };
 
     void ROS2ImageSubscriber::clear_frame_buffer() {
