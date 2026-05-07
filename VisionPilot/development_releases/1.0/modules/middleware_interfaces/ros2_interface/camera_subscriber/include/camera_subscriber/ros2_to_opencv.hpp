@@ -2,6 +2,12 @@
 #define VISIONPILOT_ROS2_TO_OPENCV_HPP
 
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <cv_bridge/cv_bridge.h>
+#include <opencv2/opencv.hpp>
+#include <mutex>
+#include <queue>
+#include <tuple>
 
 namespace camera_subscriber {
 
@@ -105,6 +111,14 @@ namespace camera_subscriber {
             * Useful for resetting state or handling error conditions
             */
             void clear_frame_buffer();
+
+
+            /**
+            * @brief Check if ROS2 stream is active
+            * 
+            * @return true if stream has started receiving frames, false otherwise
+            */
+            bool is_stream_active() const;
 
 
             // STATISTICS
