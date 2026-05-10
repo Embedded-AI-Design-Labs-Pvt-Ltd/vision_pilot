@@ -8,11 +8,20 @@ namespace camera_subscriber {
     ROS2ImageSubscriber::ROS2ImageSubscriber(
         const std::string &topic_name,
         const std::string &node_name
-    ) : rclcpp::Node(node_name) {
+    ) {
+        // Init ROS2 once
+        if (!rclcpp::ok()) {
+            static int argc = 1;
+            static const char* argv[] = {"ros2_image_subscriber", nullptr};
+            rclcpp::init(argc, const_cast<char**>(argv));
+        }
         
-        RCLCPP_INFO(get_logger(), "Initializing ROS2 Image Subscriber");
-        RCLCPP_INFO(get_logger(), "  Topic: %s", topic_name.c_str());
-        RCLCPP_INFO(get_logger(), "  QoS History Depth: %u", qos_history_depth);
+        // Create internal node
+        node = std::make_shared<rclcpp::Node>(node_name);
+        
+        RCLCPP_INFO(node->get_logger(), "Initializing ROS2 Image Subscriber");
+        RCLCPP_INFO(node->get_logger(), "  Topic: %s", topic_name.c_str());
+        RCLCPP_INFO(node->get_logger(), "  QoS History Depth: %u", qos_history_depth);
 
         stats.node_name = node_name;
 
@@ -26,7 +35,7 @@ namespace camera_subscriber {
             .best_effort()
             .durability_volatile();
 
-        image_subscription = create_subscription<sensor_msgs::msg::Image>(
+        image_subscription = node->create_subscription<sensor_msgs::msg::Image>(
             topic_name,
             qos_profile,
             [this](const sensor_msgs::msg::Image::SharedPtr msg) {
@@ -34,7 +43,12 @@ namespace camera_subscriber {
             }
         );
 
-        RCLCPP_INFO(get_logger(), "ROS2 Image Subscriber initialized successfully");
+        RCLCPP_INFO(node->get_logger(), "ROS2 Image Subscriber initialized successfully");
+
+        // Start background spin thread
+        spin_thread = std::thread([this]() {
+            rclcpp::spin(this->node);
+        });
 
     };
 
@@ -45,7 +59,7 @@ namespace camera_subscriber {
         
         // Check incoming msg
         if (!msg) {
-            RCLCPP_WARN(get_logger(), "Received null image message");
+            RCLCPP_WARN(node->get_logger(), "Received null image message");
             return;
         };
         {
@@ -61,7 +75,7 @@ namespace camera_subscriber {
             std::lock_guard<std::mutex> lock(stats_mutex);
             stats.conversion_errors++;
             RCLCPP_WARN(
-                get_logger(), 
+                node->get_logger(), 
                 "Failed to convert ROS2 image to OpenCV (encoding: %s)",
                 msg->encoding.c_str()
             );
@@ -104,7 +118,7 @@ namespace camera_subscriber {
 
         } catch (cv_bridge::Exception &e) {
             RCLCPP_ERROR(
-                get_logger(),
+                node->get_logger(),
                 "cv_bridge exception: %s, encoding: %s",
                 e.what(),
                 msg->encoding.c_str()
@@ -113,7 +127,7 @@ namespace camera_subscriber {
 
         } catch (const std::exception &e) {
             RCLCPP_ERROR(
-                get_logger(),
+                node->get_logger(),
                 "Unexpected exception during image conversion: %s",
                 e.what()
             );
@@ -163,7 +177,7 @@ namespace camera_subscriber {
         latest_frame.release();
         has_latest_frame = false;
 
-        RCLCPP_INFO(get_logger(), "Frame buffer cleared");
+        RCLCPP_INFO(node->get_logger(), "Frame buffer cleared");
 
     };
 
@@ -181,8 +195,19 @@ namespace camera_subscriber {
         stats.frames_received = 0;
         stats.frames_dropped = 0;
         stats.conversion_errors = 0;
-        RCLCPP_INFO(get_logger(), "Statistics reset");
+        RCLCPP_INFO(node->get_logger(), "Statistics reset");
 
     };
+
+
+    ROS2ImageSubscriber::~ROS2ImageSubscriber() {
+        // Request node to shutdown
+        rclcpp::shutdown();
+        
+        // Wait for spin thread to finish
+        if (spin_thread.joinable()) {
+            spin_thread.join();
+        }
+    }
 
 }; // namespace camera_subscriber
