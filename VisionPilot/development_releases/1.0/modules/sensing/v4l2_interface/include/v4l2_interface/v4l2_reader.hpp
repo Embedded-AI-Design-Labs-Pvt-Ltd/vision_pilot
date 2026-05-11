@@ -43,7 +43,10 @@ namespace v4l2_interface {
 
 
         /**
-        * @brief Get latest captured frame
+        * @brief Get latest captured frame from V4L2 device
+        *
+        * Attempts to read one from the V4L2 stream and applies target FPS throttling to
+        * match target FPS. Handles ann timing and sleeping internally.
         *
         * @return A tuple containing:
         *     - bool: true if frame is valid, false otherwise
@@ -86,7 +89,37 @@ namespace v4l2_interface {
         bool is_device_open() const;
 
 
-        
+        // STATISTICS
+
+
+        /**
+        * @brief Statistics structure for V4L2 capture operations
+        */
+        struct CaptureStats {
+            uint64_t frames_captured = 0;      // Total frames successfully captured
+            uint64_t capture_errors = 0;       // Failed frame captures (empty frames)
+            uint32_t current_width = 0;        // Current frame width
+            uint32_t current_height = 0;       // Current frame height
+            double current_fps = 0.0;          // Current FPS setting
+            std::string device_path;           // Device path being used
+        };
+
+        /**
+        * @brief Get statistics about V4L2 capture operations
+        * 
+        * @return A CaptureStats struct containing:
+        *         - frames_captured: total frames captured
+        *         - capture_errors: failed frame captures
+        *         - current_width/height: frame dimensions
+        *         - current_fps: frames per second
+        *         - device_path: V4L2 device being used
+        */
+        CaptureStats get_stats() const;
+
+        /**
+        * @brief Reset statistics counters
+        */
+        void reset_stats();
 
     }
 
