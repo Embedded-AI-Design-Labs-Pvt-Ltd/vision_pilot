@@ -7,6 +7,8 @@ target_link_libraries(VisionPilot
         can_interface
         image_preprocessing
         v4l2_interface
+        camera_subscriber
         models
         visualization
+        rclcpp::rclcpp
 )
