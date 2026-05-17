@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-find_package(OpenCV REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui videoio)
 
 add_library(visualization
         src/visualization.cpp
@@ -15,5 +15,8 @@ target_include_directories(visualization
 
 target_link_libraries(visualization
         PUBLIC
-        ${OpenCV_LIBRARIES}
+        opencv_core
+        opencv_imgproc
+        opencv_highgui
+        opencv_videoio
 )
