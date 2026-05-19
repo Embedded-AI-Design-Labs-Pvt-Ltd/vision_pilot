@@ -314,6 +314,50 @@ namespace visualization {
     };
 
 
-    
+    // Websocket handler for new connections to set up signaling handlers and manage client state
+    void websocket_handler(
+        SoupServer *server,
+        SoupWebsocketConnection *connection,
+        const char *path,
+        SoupClientContext *client,
+        gpointer user_data
+    ) {
+        
+        (void)server;
+        (void)path;
+
+        auto *impl = static_cast<WebRTCStreamer::Impl *>(user_data);
+
+        // Set up handlers for incoming messages and connection closure
+        g_signal_connect(
+            connection, 
+            "message", 
+            G_CALLBACK(on_websocket_message), 
+            impl
+        );
+        g_signal_connect(
+            connection, 
+            "closed", 
+            G_CALLBACK(on_websocket_closed), 
+            impl
+        );
+
+        // Set keepalive interval to detect dead connections faster
+        soup_websocket_connection_set_keepalive_interval(connection, 15);
+
+        g_object_ref(connection);
+
+        // Update client connection state in a thread-safe manner
+        {
+            std::lock_guard<std::mutex> lock(impl->signal_mutex);
+            if (impl->client_connection_ != nullptr) {
+                g_object_unref(impl->client_connection_);
+            }
+            impl->client_connection_ = connection;
+        }
+
+        impl->flush_pending_signals();
+
+    };
 
 }
