@@ -15,6 +15,8 @@ struct SourceConfig {
     std::string ros2_topic   = "/camera/image";
     std::string v4l2_device  = "/dev/video0";
     int         v4l2_fps     = 10;
+    // Native camera horizontal FOV (deg). ZOD front_blur ≈ 120 from calibration.
+    float       hfov_deg     = 120.f;
 };
 
 struct PipelineConfig {
@@ -30,6 +32,8 @@ struct VisionPilotConfig {
     PipelineConfig    pipeline;
     // Path to homography YAML — enables ObjectFinder tracker when non-empty.
     std::string       homography_path;
+    // Print per-frame: AutoDrive_dist | Tracker_dist+vel | Fused_dist+vel
+    bool              fusion_debug   = false;
 };
 
 // Load from key=value .conf file. Expands ~ to $HOME.

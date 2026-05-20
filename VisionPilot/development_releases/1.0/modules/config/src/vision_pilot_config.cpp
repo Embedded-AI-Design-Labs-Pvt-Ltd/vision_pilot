@@ -120,6 +120,8 @@ VisionPilotConfig load_vision_pilot_config(const std::string& path)
     cfg.source.ros2_topic    = optional(kv, "source.ros2_topic",  "/camera/image");
     cfg.source.v4l2_device   = optional(kv, "source.v4l2_device", "/dev/video0");
     cfg.source.v4l2_fps      = parse_int(optional(kv, "source.v4l2_fps", "10"), "source.v4l2_fps");
+    cfg.source.hfov_deg      = static_cast<float>(parse_double(
+        optional(kv, "source.hfov_deg", "120"), "source.hfov_deg"));
 
     cfg.pipeline.initial_inference_check = parse_bool(
         optional(kv, "pipeline.initial_inference_check", "true"),
@@ -127,6 +129,8 @@ VisionPilotConfig load_vision_pilot_config(const std::string& path)
 
     { const std::string raw = optional(kv, "tracker.homography_path", "");
       cfg.homography_path = raw.empty() ? "" : expand_home(raw); }
+
+    cfg.fusion_debug = parse_bool(optional(kv, "fusion.debug", "false"), "fusion.debug");
 
     // Validate file paths
     if (cfg.source.mode == SourceMode::Video) {
