@@ -1,15 +1,61 @@
 #include <fusion/longitudinal_fusion.hpp>
-#include <tracking/object_finder.hpp>    // private — not in public header
 #include <logging/logger.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
 
 namespace visionpilot::fusion {
 
-// ─── Construction / destruction ───────────────────────────────────────────────
+// ─── Homography loader ────────────────────────────────────────────────────────
+// Parses the YAML produced by OpenCV FileStorage or the manual calibration tool:
+//   H:
+//     rows: 3
+//     cols: 3
+//     data: [v0, v1, ..., v8]   (or one value per line with leading '-')
+static cv::Mat load_homography_yaml(const std::string& path)
+{
+    std::ifstream f(path);
+    if (!f.is_open())
+        throw std::runtime_error("LongitudinalFusion: cannot open homography: " + path);
+
+    std::vector<double> data;
+    bool in_data = false;
+    std::string line;
+    while (std::getline(f, line) && data.size() < 9) {
+        if (line.find("data:") != std::string::npos) {
+            in_data = true;
+            auto lb = line.find('[');
+            if (lb != std::string::npos) {
+                auto rb = line.find(']', lb);
+                std::string seq = line.substr(lb + 1, rb - lb - 1);
+                std::replace(seq.begin(), seq.end(), ',', ' ');
+                std::istringstream ss(seq);
+                double v;
+                while (ss >> v) data.push_back(v);
+                break;
+            }
+            continue;
+        }
+        if (in_data) {
+            auto dash = line.find('-');
+            if (dash == std::string::npos) continue;
+            try { data.push_back(std::stod(line.substr(dash + 1))); } catch (...) {}
+        }
+    }
+    if (data.size() != 9)
+        throw std::runtime_error("LongitudinalFusion: expected 9 homography values, got " +
+                                 std::to_string(data.size()));
+    cv::Mat H64(3, 3, CV_64F, data.data());
+    cv::Mat H32;
+    H64.convertTo(H32, CV_32F);
+    return H32.clone();
+}
+
+// ─── Construction ─────────────────────────────────────────────────────────────
 
 LongitudinalFusion::LongitudinalFusion()
     : LongitudinalFusion(Config{})
@@ -24,130 +70,150 @@ LongitudinalFusion::LongitudinalFusion(Config cfg)
     particles_.reserve(static_cast<std::size_t>(cfg_.n_particles));
 }
 
-// Destructor + move ops defined here so unique_ptr<ObjectFinder> has a complete type.
-LongitudinalFusion::~LongitudinalFusion()                                   = default;
-LongitudinalFusion::LongitudinalFusion(LongitudinalFusion&&) noexcept       = default;
-LongitudinalFusion& LongitudinalFusion::operator=(LongitudinalFusion&&) noexcept = default;
-
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 void LongitudinalFusion::reset()
 {
     particles_.clear();
-    initialised_ = false;
-    tracker_.reset();
+    initialised_  = false;
+    prev_fused_d_ = -1.f;
+    velocity_ema_ = 0.f;
+    homo_loaded_  = false;
+    H_            = cv::Mat();
 }
 
 CIPOFusionEstimate LongitudinalFusion::update(
     const models::AutoDriveOutput& autodrive,
     const models::AutoSpeedOutput& autospeed,
-    const cv::Mat& preprocessed_frame,
+    const cv::Mat& /*preprocessed_frame*/,
     float dt_s)
 {
-    // ── Step 1: Lazy-init ObjectFinder ────────────────────────────────────────
-    // The preprocessed_frame is the 1024×512 center-cropped image fed to the
-    // models — the same coordinate space the homography was calibrated in.
-    if (!tracker_ && !cfg_.homography_path.empty() && !preprocessed_frame.empty()) {
+    // ── Step 1: Lazy-load homography ──────────────────────────────────────────
+    if (!homo_loaded_ && !cfg_.homography_path.empty()) {
         try {
-            tracker_ = std::make_unique<tracking::ObjectFinder>(
-                cfg_.homography_path,
-                preprocessed_frame.cols,
-                preprocessed_frame.rows);
+            H_          = load_homography_yaml(cfg_.homography_path);
+            homo_loaded_ = true;
+            VP_INFO("[Fusion] Homography loaded: %s", cfg_.homography_path.c_str());
         } catch (const std::exception& e) {
-            std::fprintf(stderr, "[LongitudinalFusion] ObjectFinder init failed: %s\n", e.what());
+            VP_WARN("[Fusion] %s — running without homography", e.what());
             cfg_.homography_path.clear();
         }
     }
 
-    // ── Step 2: Run ObjectFinder ──────────────────────────────────────────────
-    // AutoSpeed bboxes are in 1024×512 model space — exactly the same space as
-    // the homography calibration.  No coordinate scaling needed.
+    // ── Step 2: AutoSpeed → world distance via homography ────────────────────
+    // No tracking state — just project each bbox bottom-centre and pick closest.
     CIPOFusionEstimate est;
-    Meas tracker_meas;
-    if (tracker_ && autospeed.valid && !preprocessed_frame.empty()) {
-        const auto tr = tracker_->update_and_get_cipo(
-            autospeed.detections, preprocessed_frame);
-        if (tr.cipo.exists) {
-            est.tracker_found   = true;
-            est.tracker_id      = tr.cipo.track_id;
-            est.tracker_dist_m  = tr.cipo.distance_m;
-            est.tracker_vel_ms  = tr.cipo.velocity_ms;
-            est.cut_in_detected = tr.cut_in_detected;
-
-            tracker_meas.distance_m = tr.cipo.distance_m;
-            tracker_meas.stddev_m   = cfg_.tracker_noise_m;
-            tracker_meas.valid      = true;
+    Meas homo_meas;
+    if (homo_loaded_ && autospeed.valid) {
+        homo_meas = project_closest(autospeed.detections);
+        if (homo_meas.valid) {
+            est.homo_found  = true;
+            est.homo_dist_m = homo_meas.distance_m;
         }
     }
 
-    // ── Step 3: AutoDrive distance measurement ────────────────────────────────
+    // ── Step 3: AutoDrive distance ────────────────────────────────────────────
     static constexpr float D_MAX = 150.f;
-    Meas autodrive_meas;
+    Meas ad_meas;
     if (autodrive.valid) {
-        autodrive_meas.distance_m = D_MAX * (1.f - autodrive.dist_normalized);
-        autodrive_meas.stddev_m   = cfg_.autodrive_noise_m;
-        autodrive_meas.valid      = true;
+        ad_meas.distance_m = D_MAX * (1.f - autodrive.dist_normalized);
+        ad_meas.stddev_m   = cfg_.autodrive_noise_m;
+        ad_meas.valid      = true;
     }
 
     // ── Step 4: Particle filter ───────────────────────────────────────────────
     const float dt = (dt_s > 1e-6f) ? dt_s : cfg_.dt_s;
 
     if (!initialised_) {
-        if (!autodrive_meas.valid) return est;  // tracker fields already set above
-        init_from(autodrive_meas.distance_m, autodrive_meas.stddev_m);
+        if (!ad_meas.valid) return est;
+        init_from(ad_meas.distance_m, ad_meas.stddev_m);
         initialised_ = true;
     } else {
         predict(dt);
     }
 
-    // Log-weights are accumulated in weight_update; no normalise() needed here.
-    // linear_weights() applies log-sum-exp on-the-fly for numerical stability.
-    weight_update(autodrive_meas, tracker_meas);
+    weight_update(ad_meas, homo_meas);
     if (effective_n() < 0.5f * static_cast<float>(cfg_.n_particles)) resample();
 
-    // ── Step 5: Posterior statistics (weighted mean + variance) ──────────────
-    const auto w = linear_weights();
-    const std::size_t N = particles_.size();
-
-    float mean_d = 0.f, mean_v = 0.f;
+    // ── Step 5: Posterior distance (weighted mean + stddev) ───────────────────
+    const auto   w      = linear_weights();
+    const auto   N      = particles_.size();
+    float mean_d = 0.f;
+    for (std::size_t i = 0; i < N; ++i) mean_d += w[i] * particles_[i].distance_m;
+    float var_d  = 0.f;
     for (std::size_t i = 0; i < N; ++i) {
-        mean_d += w[i] * particles_[i].distance_m;
-        mean_v += w[i] * particles_[i].velocity_ms;
-    }
-
-    float var_d = 0.f, var_v = 0.f;
-    for (std::size_t i = 0; i < N; ++i) {
-        const float dd = particles_[i].distance_m  - mean_d;
-        const float dv = particles_[i].velocity_ms - mean_v;
+        const float dd = particles_[i].distance_m - mean_d;
         var_d += w[i] * dd * dd;
-        var_v += w[i] * dv * dv;
     }
 
-    est.valid              = true;
-    est.distance_m         = mean_d;
-    est.velocity_ms        = mean_v;
-    est.distance_stddev_m  = std::sqrt(std::max(0.f, var_d));
-    est.velocity_stddev_ms = std::sqrt(std::max(0.f, var_v));
+    // ── Step 6: Velocity = EMA-smoothed finite difference of fused distance ───
+    // The PF velocity particles are unreliable when only distance is observed and
+    // measurements are noisy (they accumulate a biased random walk).  A simple
+    // numerical derivative is far more consistent with the displayed distances.
+    float vel = 0.f;
+    if (prev_fused_d_ >= 0.f && dt > 1e-6f) {
+        const float raw_vel = (mean_d - prev_fused_d_) / dt;
+        velocity_ema_ = cfg_.velocity_ema_alpha * raw_vel
+                      + (1.f - cfg_.velocity_ema_alpha) * velocity_ema_;
+        vel = velocity_ema_;
+    }
+    prev_fused_d_ = mean_d;
 
-    // ── Step 6: Debug log — compare all three estimates side-by-side ─────────
+    est.valid             = true;
+    est.distance_m        = mean_d;
+    est.velocity_ms       = vel;
+    est.distance_stddev_m = std::sqrt(std::max(0.f, var_d));
+
+    // ── Step 7: Debug log ─────────────────────────────────────────────────────
     if (cfg_.debug) {
-        char ad_buf[32], tr_buf[64];
-        if (autodrive_meas.valid)
-            std::snprintf(ad_buf, sizeof(ad_buf), "%.1f m", autodrive_meas.distance_m);
+        char ad_buf[32], ho_buf[32];
+        if (ad_meas.valid)
+            std::snprintf(ad_buf, sizeof(ad_buf), "%.1f m", ad_meas.distance_m);
         else
             std::snprintf(ad_buf, sizeof(ad_buf), "(invalid)");
-
-        if (tracker_meas.valid)
-            std::snprintf(tr_buf, sizeof(tr_buf), "%.1f m  v=%.2f m/s  (id=%d)",
-                          est.tracker_dist_m, est.tracker_vel_ms, est.tracker_id);
+        if (homo_meas.valid)
+            std::snprintf(ho_buf, sizeof(ho_buf), "%.1f m", homo_meas.distance_m);
         else
-            std::snprintf(tr_buf, sizeof(tr_buf), "(no CIPO)");
+            std::snprintf(ho_buf, sizeof(ho_buf), "(none)");
 
-        VP_INFO("[Fusion] AutoDrive=%s | Tracker=%s | Fused=%.1f m  v=%.2f m/s  ±%.1f m",
-                ad_buf, tr_buf, est.distance_m, est.velocity_ms, est.distance_stddev_m);
+        VP_INFO("[Fusion] AD=%s | Homo=%s | Fused=%.1f m  v=%.2f m/s  ±%.1f m",
+                ad_buf, ho_buf, est.distance_m, est.velocity_ms, est.distance_stddev_m);
     }
 
     return est;
+}
+
+// ─── Homography projection ────────────────────────────────────────────────────
+
+LongitudinalFusion::Meas
+LongitudinalFusion::project_closest(const std::vector<models::Detection>& dets) const
+{
+    Meas best;
+    best.valid      = false;
+    best.distance_m = std::numeric_limits<float>::max();
+    best.stddev_m   = cfg_.homo_noise_m;
+
+    for (const auto& d : dets) {
+        // Bottom-centre of the bounding box
+        const float ux = (d.x1 + d.x2) * 0.5f;
+        const float uy = d.y2;
+
+        // Project through homography to world coordinates
+        std::vector<cv::Point2f> src = {cv::Point2f(ux, uy)}, dst;
+        cv::perspectiveTransform(src, dst, H_);
+        const cv::Point2f& wp = dst[0];
+
+        // Only keep objects in front of the vehicle and within the in-path corridor
+        if (wp.y <= 1.f) continue;                            // behind / on ego
+        if (std::abs(wp.x) > cfg_.cipo_lateral_m) continue;  // too far left/right
+
+        const float dist = std::sqrt(wp.x * wp.x + wp.y * wp.y);
+        if (dist < best.distance_m) {
+            best.distance_m = dist;
+            best.valid      = true;
+        }
+    }
+    return best;
 }
 
 // ─── Particle filter internals ────────────────────────────────────────────────
@@ -160,7 +226,7 @@ void LongitudinalFusion::init_from(float dist_m, float stddev_m)
     for (auto& p : particles_) {
         p.distance_m  = std::clamp(nd(rng_), 0.f, cfg_.d_max_m);
         p.velocity_ms = nv(rng_);
-        p.log_w       = 0.f;   // uniform: log(1/N) omitted, handled in linear_weights()
+        p.log_w       = 0.f;
     }
 }
 
@@ -180,20 +246,14 @@ float LongitudinalFusion::gaussian_loglik(float z, float mean, float sigma)
     return -0.5f * (d / sigma) * (d / sigma);
 }
 
-void LongitudinalFusion::weight_update(const Meas& ad, const Meas& tr)
+void LongitudinalFusion::weight_update(const Meas& ad, const Meas& homo)
 {
-    // MRPT style: accumulate in log-space — no exp() here, so no underflow.
-    // Even if a particle is 80 m from a tight tracker measurement, log_w just
-    // becomes a large negative number; it never underflows to exactly 0.
     for (auto& p : particles_) {
-        if (ad.valid) p.log_w += gaussian_loglik(ad.distance_m, p.distance_m, ad.stddev_m);
-        if (tr.valid) p.log_w += gaussian_loglik(tr.distance_m, p.distance_m, tr.stddev_m);
+        if (ad.valid)   p.log_w += gaussian_loglik(ad.distance_m,   p.distance_m, ad.stddev_m);
+        if (homo.valid) p.log_w += gaussian_loglik(homo.distance_m, p.distance_m, homo.stddev_m);
     }
 }
 
-// Log-sum-exp normalisation (same trick MRPT uses in getMean).
-// Shifts all log-weights by the maximum before exp() so the largest weight
-// becomes 1.0 — impossible to underflow regardless of how negative the others are.
 std::vector<float> LongitudinalFusion::linear_weights() const
 {
     const std::size_t N = particles_.size();
@@ -203,7 +263,7 @@ std::vector<float> LongitudinalFusion::linear_weights() const
     std::vector<float> w(N);
     float sum = 0.f;
     for (std::size_t i = 0; i < N; ++i) {
-        w[i] = std::exp(particles_[i].log_w - max_lw);   // largest particle → 1.0
+        w[i] = std::exp(particles_[i].log_w - max_lw);
         sum  += w[i];
     }
     if (sum < 1e-12f) {
@@ -229,12 +289,11 @@ void LongitudinalFusion::resample()
     if (N == 0) return;
 
     const auto w = linear_weights();
-
-    // Build cumulative sum from normalised linear weights.
     std::vector<float> cs(static_cast<std::size_t>(N));
     cs[0] = w[0];
     for (int i = 1; i < N; ++i)
-        cs[static_cast<std::size_t>(i)] = cs[static_cast<std::size_t>(i-1)] + w[static_cast<std::size_t>(i)];
+        cs[static_cast<std::size_t>(i)] =
+            cs[static_cast<std::size_t>(i-1)] + w[static_cast<std::size_t>(i)];
 
     std::vector<Particle> np;
     np.reserve(static_cast<std::size_t>(N));
@@ -244,7 +303,6 @@ void LongitudinalFusion::resample()
     for (int i = 0; i < N; ++i) {
         const float thr = u0 + static_cast<float>(i) / static_cast<float>(N);
         while (j < N-1 && cs[static_cast<std::size_t>(j)] < thr) ++j;
-        // Reset log_w = 0 after resample so the next frame starts from uniform.
         np.push_back({particles_[static_cast<std::size_t>(j)].distance_m,
                       particles_[static_cast<std::size_t>(j)].velocity_ms,
                       0.f});
