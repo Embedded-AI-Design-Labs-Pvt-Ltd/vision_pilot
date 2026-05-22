@@ -78,7 +78,7 @@ void LongitudinalFusion::reset()
     initialised_  = false;
     prev_fused_d_ = -1.f;
     velocity_ema_ = 0.f;
-    homo_loaded_  = false;
+    H_loaded_  = false;
     H_            = cv::Mat();
 }
 
@@ -89,10 +89,10 @@ CIPOFusionEstimate LongitudinalFusion::update(
     float dt_s)
 {
     // ── Step 1: Lazy-load homography ──────────────────────────────────────────
-    if (!homo_loaded_ && !cfg_.homography_path.empty()) {
+    if (!H_loaded_ && !cfg_.homography_path.empty()) {
         try {
             H_          = load_homography_yaml(cfg_.homography_path);
-            homo_loaded_ = true;
+            H_loaded_ = true;
             VP_INFO("[Fusion] Homography loaded: %s", cfg_.homography_path.c_str());
         } catch (const std::exception& e) {
             VP_WARN("[Fusion] %s — running without homography", e.what());
@@ -103,12 +103,12 @@ CIPOFusionEstimate LongitudinalFusion::update(
     // ── Step 2: AutoSpeed → world distance via homography ────────────────────
     // No tracking state — just project each bbox bottom-centre and pick closest.
     CIPOFusionEstimate est;
-    Meas homo_meas;
-    if (homo_loaded_ && autospeed.valid) {
-        homo_meas = project_closest(autospeed.detections);
-        if (homo_meas.valid) {
-            est.homo_found  = true;
-            est.homo_dist_m = homo_meas.distance_m;
+    Meas cipo_raw;
+    if (H_loaded_ && autospeed.valid) {
+        cipo_raw = project_closest(autospeed.detections);
+        if (cipo_raw.valid) {
+            est.cipo_raw_found  = true;
+            est.cipo_raw_dist_m = cipo_raw.distance_m;
         }
     }
 
@@ -132,7 +132,7 @@ CIPOFusionEstimate LongitudinalFusion::update(
         predict(dt);
     }
 
-    weight_update(ad_meas, homo_meas);
+    weight_update(ad_meas, cipo_raw);
     if (effective_n() < 0.5f * static_cast<float>(cfg_.n_particles)) resample();
 
     // ── Step 5: Posterior distance (weighted mean + stddev) ───────────────────
@@ -166,18 +166,18 @@ CIPOFusionEstimate LongitudinalFusion::update(
 
     // ── Step 7: Debug log ─────────────────────────────────────────────────────
     if (cfg_.debug) {
-        char ad_buf[32], ho_buf[32];
+        char ad_buf[32], cr_buf[32];
         if (ad_meas.valid)
             std::snprintf(ad_buf, sizeof(ad_buf), "%.1f m", ad_meas.distance_m);
         else
             std::snprintf(ad_buf, sizeof(ad_buf), "(invalid)");
-        if (homo_meas.valid)
-            std::snprintf(ho_buf, sizeof(ho_buf), "%.1f m", homo_meas.distance_m);
+        if (cipo_raw.valid)
+            std::snprintf(cr_buf, sizeof(cr_buf), "%.1f m", cipo_raw.distance_m);
         else
-            std::snprintf(ho_buf, sizeof(ho_buf), "(none)");
+            std::snprintf(cr_buf, sizeof(cr_buf), "(none)");
 
-        VP_INFO("[Fusion] AD=%s | Homo=%s | Fused=%.1f m  v=%.2f m/s  ±%.1f m",
-                ad_buf, ho_buf, est.distance_m, est.velocity_ms, est.distance_stddev_m);
+        VP_INFO("[Fusion] AD=%s | CIPO=%s | Fused=%.1f m  v=%.2f m/s  ±%.1f m",
+                ad_buf, cr_buf, est.distance_m, est.velocity_ms, est.distance_stddev_m);
     }
 
     return est;
@@ -191,11 +191,11 @@ LongitudinalFusion::project_closest(const std::vector<models::Detection>& dets) 
     Meas best;
     best.valid      = false;
     best.distance_m = std::numeric_limits<float>::max();
-    best.stddev_m   = cfg_.homo_noise_m;
+    best.stddev_m   = cfg_.cipo_noise_m;
 
-    // ZOD convention: world_y is negative for objects ahead.  A vehicle 30m
-    // ahead projects to roughly (x≈0, y≈-30).  Distance = |y|.
     for (const auto& d : dets) {
+        if (d.class_id != 1) continue;  // CIPO Level 1 only (matches 0.9 shouldTrackClass)
+
         const float ux = (d.x1 + d.x2) * 0.5f;
         const float uy = d.y2;
 
@@ -203,10 +203,8 @@ LongitudinalFusion::project_closest(const std::vector<models::Detection>& dets) 
         cv::perspectiveTransform(src, dst, H_);
         const cv::Point2f& wp = dst[0];
 
-        if (wp.y >= -1.f) continue;  // not in front of ego (at least 1 m ahead)
-
-        const float dist = -wp.y;    // forward distance in metres
-        if (dist < best.distance_m) {
+        const float dist = std::sqrt(wp.x * wp.x + wp.y * wp.y);
+        if (dist > 0.f && dist < best.distance_m) {
             best.distance_m = dist;
             best.valid      = true;
         }
@@ -244,11 +242,11 @@ float LongitudinalFusion::gaussian_loglik(float z, float mean, float sigma)
     return -0.5f * (d / sigma) * (d / sigma);
 }
 
-void LongitudinalFusion::weight_update(const Meas& ad, const Meas& homo)
+void LongitudinalFusion::weight_update(const Meas& ad, const Meas& cipo_raw)
 {
     for (auto& p : particles_) {
-        if (ad.valid)   p.log_w += gaussian_loglik(ad.distance_m,   p.distance_m, ad.stddev_m);
-        if (homo.valid) p.log_w += gaussian_loglik(homo.distance_m, p.distance_m, homo.stddev_m);
+        if (ad.valid)       p.log_w += gaussian_loglik(ad.distance_m,       p.distance_m, ad.stddev_m);
+        if (cipo_raw.valid) p.log_w += gaussian_loglik(cipo_raw.distance_m, p.distance_m, cipo_raw.stddev_m);
     }
 }
 
