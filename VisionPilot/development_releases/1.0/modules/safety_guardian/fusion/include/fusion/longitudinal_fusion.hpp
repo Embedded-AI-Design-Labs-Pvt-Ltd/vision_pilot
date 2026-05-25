@@ -22,6 +22,7 @@ struct CIPOFusionEstimate {
     // Raw CIPO distance from AutoSpeed bboxes via homography (no tracking state)
     bool  cipo_raw_found    = false;
     float cipo_raw_dist_m   = 0.f;
+    bool  cut_in_detected   = false; // Level 2 is closer than Level 1
 };
 
 // ─── LongitudinalFusion ────────────────────────────────────────────────────────
@@ -47,6 +48,9 @@ public:
         float cipo_noise_m         = 5.f;     // CIPO raw distance 1-sigma noise
         // EMA factor for velocity smoothing (higher = more responsive, noisier).
         float velocity_ema_alpha   = 0.3f;
+        // Deadband: raw Δd/Δt below this threshold is treated as 0 before EMA.
+        // Prevents particle-filter drift (~0.1 m/frame) from registering as motion.
+        float velocity_deadband_ms = 0.5f;
         std::string homography_path = "";
         bool debug = false;
     };
@@ -67,9 +71,12 @@ private:
     struct Particle { float distance_m, velocity_ms, log_w; };
     struct Meas     { float distance_m = 0.f; float stddev_m = 15.f; bool valid = false; };
 
-    // Returns the closest in-path distance from AutoSpeed detections via homography.
-    // Returns valid=false when no suitable detection exists or homography not loaded.
-    Meas project_closest(const std::vector<models::Detection>& dets) const;
+    // Projects all Level 1 and Level 2 AutoSpeed detections through H.
+    // Returns the measurement to fuse and sets cut_in=true when the closest
+    // Level 2 is nearer than the closest Level 1 (cut-in scenario).
+    struct CIPOSelection { Meas meas; bool cut_in = false; };
+    CIPOSelection select_cipo(const std::vector<models::Detection>& dets) const;
+    static float project_dist(const cv::Mat& H, float ux, float uy);
 
     void  init_from(float dist_m, float stddev_m);
     void  predict(float dt_s);

@@ -101,11 +101,12 @@ CIPOFusionEstimate LongitudinalFusion::update(
     }
 
     // ── Step 2: AutoSpeed → world distance via homography ────────────────────
-    // No tracking state — just project each bbox bottom-centre and pick closest.
     CIPOFusionEstimate est;
     Meas cipo_raw;
     if (H_loaded_ && autospeed.valid) {
-        cipo_raw = project_closest(autospeed.detections);
+        const auto sel = select_cipo(autospeed.detections);
+        cipo_raw            = sel.meas;
+        est.cut_in_detected = sel.cut_in;
         if (cipo_raw.valid) {
             est.cipo_raw_found  = true;
             est.cipo_raw_dist_m = cipo_raw.distance_m;
@@ -153,7 +154,11 @@ CIPOFusionEstimate LongitudinalFusion::update(
     float vel = 0.f;
     if (prev_fused_d_ >= 0.f && dt > 1e-6f) {
         const float raw_vel = (mean_d - prev_fused_d_) / dt;
-        velocity_ema_ = cfg_.velocity_ema_alpha * raw_vel
+        // Deadband: PF drift (~0.1 m/frame at 10 fps = 1 m/s) must exceed
+        // threshold before it registers as real motion.
+        const float gated = (std::abs(raw_vel) >= cfg_.velocity_deadband_ms)
+                            ? raw_vel : 0.f;
+        velocity_ema_ = cfg_.velocity_ema_alpha * gated
                       + (1.f - cfg_.velocity_ema_alpha) * velocity_ema_;
         vel = velocity_ema_;
     }
@@ -176,8 +181,10 @@ CIPOFusionEstimate LongitudinalFusion::update(
         else
             std::snprintf(cr_buf, sizeof(cr_buf), "(none)");
 
-        VP_INFO("[Fusion] AD=%s | CIPO=%s | Fused=%.1f m  v=%.2f m/s  ±%.1f m",
-                ad_buf, cr_buf, est.distance_m, est.velocity_ms, est.distance_stddev_m);
+        VP_INFO("[Fusion] AD=%s | CIPO=%s%s | Fused=%.1f m  v=%.2f m/s  ±%.1f m",
+                ad_buf, cr_buf,
+                est.cut_in_detected ? " [CUT-IN]" : "",
+                est.distance_m, est.velocity_ms, est.distance_stddev_m);
     }
 
     return est;
@@ -185,31 +192,50 @@ CIPOFusionEstimate LongitudinalFusion::update(
 
 // ─── Homography projection ────────────────────────────────────────────────────
 
-LongitudinalFusion::Meas
-LongitudinalFusion::project_closest(const std::vector<models::Detection>& dets) const
+float LongitudinalFusion::project_dist(const cv::Mat& H, float ux, float uy)
 {
-    Meas best;
-    best.valid      = false;
-    best.distance_m = std::numeric_limits<float>::max();
-    best.stddev_m   = cfg_.cipo_noise_m;
+    std::vector<cv::Point2f> src = {cv::Point2f(ux, uy)}, dst;
+    cv::perspectiveTransform(src, dst, H);
+    return std::sqrt(dst[0].x * dst[0].x + dst[0].y * dst[0].y);
+}
+
+// Find the closest Level 1 and closest Level 2 detection.
+// If Level 2 is closer than Level 1 → cut-in: fuse the Level 2 distance.
+// Otherwise fuse the closest Level 1.
+// class_id == 1: CIPO Level 1 (straight ahead, same lane)
+// class_id == 2: CIPO Level 2 (adjacent lane, potential cut-in)
+LongitudinalFusion::CIPOSelection
+LongitudinalFusion::select_cipo(const std::vector<models::Detection>& dets) const
+{
+    float best_l1 = std::numeric_limits<float>::max();
+    float best_l2 = std::numeric_limits<float>::max();
 
     for (const auto& d : dets) {
-        if (d.class_id != 1) continue;  // CIPO Level 1 only (matches 0.9 shouldTrackClass)
-
-        const float ux = (d.x1 + d.x2) * 0.5f;
-        const float uy = d.y2;
-
-        std::vector<cv::Point2f> src = {cv::Point2f(ux, uy)}, dst;
-        cv::perspectiveTransform(src, dst, H_);
-        const cv::Point2f& wp = dst[0];
-
-        const float dist = std::sqrt(wp.x * wp.x + wp.y * wp.y);
-        if (dist > 0.f && dist < best.distance_m) {
-            best.distance_m = dist;
-            best.valid      = true;
-        }
+        if (d.class_id != 1 && d.class_id != 2) continue;
+        const float dist = project_dist(H_,
+                                        (d.x1 + d.x2) * 0.5f,
+                                        d.y2);
+        if (dist <= 0.f) continue;
+        if (d.class_id == 1 && dist < best_l1) best_l1 = dist;
+        if (d.class_id == 2 && dist < best_l2) best_l2 = dist;
     }
-    return best;
+
+    CIPOSelection sel;
+    sel.meas.stddev_m = cfg_.cipo_noise_m;
+
+    const bool have_l1 = best_l1 < std::numeric_limits<float>::max();
+    const bool have_l2 = best_l2 < std::numeric_limits<float>::max();
+
+    if (have_l2 && have_l1 && best_l2 < best_l1) {
+        // Level 2 closer than Level 1 → cut-in
+        sel.meas.distance_m = best_l2;
+        sel.meas.valid      = true;
+        sel.cut_in          = true;
+    } else if (have_l1) {
+        sel.meas.distance_m = best_l1;
+        sel.meas.valid      = true;
+    }
+    return sel;
 }
 
 // ─── Particle filter internals ────────────────────────────────────────────────
