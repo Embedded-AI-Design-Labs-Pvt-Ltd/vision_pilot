@@ -40,8 +40,8 @@ struct LateralFusionEstimate {
 // ─── LateralFusion ────────────────────────────────────────────────────────────
 //
 //  Per-frame lateral pipeline:
-//    1. Project AutoSteer (u,v) waypoints to world (x=forward, y=lateral) via H.
-//       xp row-0 = u [px], row-1 = v [px].  Zero pairs are skipped (invalid).
+//    1. Project all 64 AutoSteer (u,v) waypoints to world (x=forward, y=lateral) via H.
+//       xp row-0 = u [px], row-1 = v [px].  All points projected, no filtering.
 //    2. 2nd-order polynomial RANSAC on world points:
 //         y_lateral = a·x² + b·x + c
 //       → CTE = c, Yaw = atan(b), Curvature = |2a|/(1+b²)^1.5

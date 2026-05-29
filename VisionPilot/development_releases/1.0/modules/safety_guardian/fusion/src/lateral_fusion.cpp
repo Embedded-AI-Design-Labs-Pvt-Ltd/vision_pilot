@@ -100,7 +100,7 @@ LateralFusionEstimate LateralFusion::update(
     if (H_loaded_ && steer.valid) {
         const auto pts = project_waypoints(steer);
         est.path_points = static_cast<int>(pts.size());
-        if (static_cast<int>(pts.size()) >= cfg_.ransac_min_pts)
+        if (!pts.empty())
             path = fit_ransac(pts);
     }
 
@@ -210,8 +210,7 @@ LateralFusionEstimate LateralFusion::update(
 //  AutoSteer xp layout (row-major flat):
 //    xp[0..63]   = u values (image x, pixels in preprocessed 1024×512 frame)
 //    xp[64..127] = v values (image y, pixels in preprocessed 1024×512 frame)
-//  Zero pairs (u=0, v=0) are padding — skipped.
-//  After projection, points behind the ego (x_world <= 0) are discarded.
+//  All 64 waypoints are projected unconditionally — no filtering.
 //
 std::vector<LateralFusion::WorldPt>
 LateralFusion::project_waypoints(const models::AutoSteerOutput& steer) const
@@ -223,15 +222,7 @@ LateralFusion::project_waypoints(const models::AutoSteerOutput& steer) const
     for (int i = 0; i < N_WP; ++i) {
         const float u = steer.xp[i];
         const float v = steer.xp[N_WP + i];
-
-        // Skip zero-padded / invalid waypoints
-        if (u == 0.f && v == 0.f) continue;
-
         auto [xw, yw] = project_world(H_, u, v);
-
-        // Only keep points in front of the ego
-        if (xw <= 0.5f) continue;
-
         out.push_back({xw, yw});
     }
     return out;
