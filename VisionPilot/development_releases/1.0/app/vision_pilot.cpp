@@ -5,9 +5,15 @@
 #include <logging/logger.hpp>
 #include <debug/debug_draw.hpp>
 
-#include <camera_subscriber/ros2_to_opencv.hpp>
-#include <v4l2_interface/v4l2_reader.hpp>
+#include <camera_interface/v4l2_camera_interface.hpp>
 #include <visualization/visualization.hpp>
+#ifdef ENABLE_WEBRTC
+#include <visualization/visualization_to_webrtc.hpp>
+#endif
+
+#ifdef ENABLE_ROS2_INTERFACE
+#include <camera_subscriber/ros2_to_opencv.hpp>
+#endif
 
 #include <engine/onnx_engine.hpp>
 #include <fusion/longitudinal_fusion.hpp>
@@ -22,6 +28,7 @@
 #include <chrono>
 #include <cstring>
 #include <future>
+#include <memory>
 #include <optional>
 #include <string>
 #include <thread>
@@ -31,6 +38,24 @@ namespace vm = visionpilot::models;
 namespace vf = visionpilot::fusion;
 namespace ve = visionpilot::engine;
 namespace vd = visionpilot::debug;
+
+struct DisplayOutput {
+    bool show_local_preview = true;
+#ifdef ENABLE_WEBRTC
+    std::unique_ptr<visualization::WebRTCStreamer> webrtc;
+#endif
+};
+
+static void present_frame(cv::Mat& frame, const std::vector<std::string>& overlay,
+                          DisplayOutput& out)
+{
+    if (out.show_local_preview)
+        visualization::render_frame(frame, "VisionPilot", overlay);
+#ifdef ENABLE_WEBRTC
+    if (out.webrtc)
+        out.webrtc->push_frame(frame);
+#endif
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Circular frame buffer — last N BGR frames for AutoDrive's 2-frame input
@@ -242,7 +267,8 @@ static cv::Mat preprocess(const cv::Mat& raw, float hfov_deg)
 
 static int run_video(InferencePipeline& pipeline,
                      const VisionPilotConfig& cfg,
-                     const std::string& path)
+                     const std::string& path,
+                     DisplayOutput& display)
 {
     cv::VideoCapture cap(path);
     if (!cap.isOpened()) { VP_ERROR("Cannot open video: %s", path.c_str()); return 1; }
@@ -291,8 +317,9 @@ static int run_video(InferencePipeline& pipeline,
             if (result->frame_id % 30 == 0) pipeline.latency().print();
             vd::annotate_frame(prep, *result);
         }
-        visualization::render_frame(prep, "VisionPilot",
-            result ? std::vector<std::string>{} : std::vector<std::string>{"warming up..."});
+        present_frame(prep,
+            result ? std::vector<std::string>{} : std::vector<std::string>{"warming up..."},
+            display);
 
         if (period.count() > 0) {
             const auto rem = period - (std::chrono::steady_clock::now() - t0);
@@ -305,10 +332,12 @@ static int run_video(InferencePipeline& pipeline,
 
 static void run_ros2(InferencePipeline& pipeline,
                      const VisionPilotConfig& cfg,
-                     const std::string& topic)
+                     const std::string& topic,
+                     DisplayOutput& display)
 {
+#ifdef ENABLE_ROS2_INTERFACE
     VP_INFO("ROS2 mode | topic: %s", topic.c_str());
-    camera_subscriber::ROS2ImageSubscriber sub(topic);
+    camera_interface::ROS2ImageSubscriber sub(topic);
     for (;;) {
         auto [ok, frame] = sub.get_latest_frame();
         if (!ok || frame.empty()) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); continue; }
@@ -319,17 +348,21 @@ static void run_ros2(InferencePipeline& pipeline,
 
         if (result->frame_id % 30 == 0) pipeline.latency().print();
         vd::annotate_frame(prep, *result);
-        visualization::render_frame(prep, "VisionPilot", {});
+        present_frame(prep, {}, display);
     }
     visualization::close_windows();
+#else
+    VP_ERROR("ROS2 mode requested but VisionPilot was built with ENABLE_ROS2_INTERFACE=OFF");
+#endif
 }
 
 static void run_v4l2(InferencePipeline& pipeline,
                      const VisionPilotConfig& cfg,
-                     const std::string& device, int fps)
+                     const std::string& device, int fps,
+                     DisplayOutput& display)
 {
     VP_INFO("V4L2 mode | device: %s  fps: %d", device.c_str(), fps);
-    v4l2_interface::V4L2Reader reader(device, static_cast<uint32_t>(fps));
+    camera_interface::V4L2CameraInterface reader(device, static_cast<uint32_t>(fps));
     if (!reader.is_device_open()) { VP_ERROR("Failed to open: %s", device.c_str()); return; }
     for (;;) {
         auto [ok, frame] = reader.get_latest_frame();
@@ -341,7 +374,7 @@ static void run_v4l2(InferencePipeline& pipeline,
 
         if (result->frame_id % 30 == 0) pipeline.latency().print();
         vd::annotate_frame(prep, *result);
-        visualization::render_frame(prep, "VisionPilot", {});
+        present_frame(prep, {}, display);
     }
     visualization::close_windows();
 }
@@ -376,10 +409,43 @@ int main(int argc, char** argv)
     vd::init_wheel_assets(cfg.wheel_dir);
     vd::init_homography(cfg.homography_path);
 
+    DisplayOutput display;
+#ifdef ENABLE_WEBRTC
+    bool start_webrtc = false;
+    uint16_t webrtc_port = 8080;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--webrtc") start_webrtc = true;
+        if (arg == "--webrtc-port" && i + 1 < argc)
+            webrtc_port = static_cast<uint16_t>(std::stoi(argv[++i]));
+    }
+    display.show_local_preview = !start_webrtc;
+    if (start_webrtc) {
+        VP_INFO("WebRTC streamer on port %u (local preview disabled)", webrtc_port);
+        display.webrtc = std::make_unique<visualization::WebRTCStreamer>();
+        if (!display.webrtc->init(webrtc_port)) {
+            VP_ERROR("Failed to start WebRTC streamer on port %u", webrtc_port);
+            return 1;
+        }
+    }
+#else
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--webrtc") {
+            VP_WARN("--webrtc ignored: VisionPilot built without ENABLE_WEBRTC");
+            break;
+        }
+    }
+#endif
+
     switch (cfg.source.mode) {
-        case SourceMode::Video: return run_video(pipeline, cfg, cfg.source.video_path);
-        case SourceMode::Ros2:  run_ros2(pipeline, cfg, cfg.source.ros2_topic); break;
-        case SourceMode::V4l2:  run_v4l2(pipeline, cfg, cfg.source.v4l2_device, cfg.source.v4l2_fps); break;
+        case SourceMode::Video:
+            return run_video(pipeline, cfg, cfg.source.video_path, display);
+        case SourceMode::Ros2:
+            run_ros2(pipeline, cfg, cfg.source.ros2_topic, display);
+            break;
+        case SourceMode::V4l2:
+            run_v4l2(pipeline, cfg, cfg.source.v4l2_device, cfg.source.v4l2_fps, display);
+            break;
     }
     return 0;
 }
