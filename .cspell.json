@@ -1,5 +1,31 @@
 {
   "ignorePaths": [],
   "ignoreRegExpList": [],
-  "words": []
+  "words": [
+    "autospeed",
+    "autoware",
+    "buildx",
+    "cmapy",
+    "cudnn",
+    "homography",
+    "imagetools",
+    "domainseg",
+    "egolanes",
+    "gstreamer",
+    "libopencv",
+    "novnc",
+    "onnx",
+    "onnxruntime",
+    "openbox",
+    "sceneseg",
+    "tensorrt",
+    "tigervnc",
+    "torchvision",
+    "tqdm",
+    "visionpilot",
+    "vncpasswd",
+    "vncserver",
+    "websockify",
+    "xstartup"
+  ]
 }
