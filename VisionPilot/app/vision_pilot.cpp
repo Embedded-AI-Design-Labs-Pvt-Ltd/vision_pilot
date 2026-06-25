@@ -1,6 +1,5 @@
 // VisionPilot — preprocess → inference → fusion → display
 #include <config/vision_pilot_config.hpp>
-#include <debug/debug_draw.hpp>
 #include <engine/onnx_engine.hpp>
 #include <image_preprocessing/image_preprocessor.hpp>
 #include <logging/logger.hpp>
@@ -24,15 +23,11 @@
 #include <vehicle_ros2_interface/vehicle_ros2_interface.hpp>
 #endif
 
-
-
 namespace ve = visionpilot::engine;
 namespace vm = visionpilot::models;
-namespace vd = visionpilot::debug;
 
 int main(int argc, char** argv)
 {
-    // ── 1. Config ─────────────────────────────────────────────────────────────
     const std::string cfg_path = resolve_vision_pilot_config_path(argc, argv);
     if (cfg_path.empty())
     {
@@ -56,19 +51,13 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // ── 2. Pipeline (preprocess + ONNX + inference/fusion) ────────────────────
     ImagePreprocessor preprocessor;
     ve::OnnxEngine engine(cfg.engine);
-    // vm::InferencePipeline pipeline(engine, {cfg.inference.precision, cfg.fusion_debug,});
     vm::InferencePipeline pipeline(engine, cfg.inference);
-
     Planner planner(cfg.speed_limit, cfg.Lf);
 
-    vd::init_wheel_assets(cfg.wheel_dir);
-    vd::init_homography();
-    visualization::init_production_assets();  // resolve assets/icons at start-up
+    visualization::init_production_assets();
 
-    // ── 3. Display output ─────────────────────────────────────────────────────
     bool show_window = true;
 #ifdef ENABLE_WEBRTC
     std::unique_ptr<visualization::WebRTCStreamer> webrtc;
@@ -83,7 +72,6 @@ int main(int argc, char** argv)
     }
 #endif
 
-    // ── 4. Frame source (video / V4L2 / ROS2) ───────────────────────────────
     auto source = camera_interface::open_frame_source(cfg.source);
     if (!source || !source->is_device_open())
     {
@@ -92,10 +80,8 @@ int main(int argc, char** argv)
     }
 
     const cv::Size net_size(vm::AutoDrive::NET_W, vm::AutoDrive::NET_H);
-    const std::string label = source_label(cfg.source);
     cv::Mat frame, warped, resized;
 
-    // ── 5. Main loop ────────────────────────────────────────────────────────
     while (true)
     {
         auto [ok, frame] = source->get_latest_frame();
@@ -112,7 +98,6 @@ int main(int argc, char** argv)
         {
             pipeline.latency().print();
 
-            // ── Plan ────────────────────────────────────────────────────────
             const double ego_v     = vehicle_interface->read();
             const double cte       = r->lateral.cte_m;
             const double epsi      = r->lateral.yaw_rad;
@@ -128,44 +113,18 @@ int main(int argc, char** argv)
                     plan.steering.empty() ? 0.0 : plan.steering[0],
                     plan.acceleration);
 
-            // Send commands
             vehicle_interface->write(
                 plan.steering.empty() ? 0.0 : plan.steering[0],
                 plan.acceleration);
 
-            // ── Production visualisation ─────────────────────────────────
-            if (show_window) {
-                visualization::ProductionView pv;
-                pv.ego_speed_ms = ego_v;
-                pv.acceleration = plan.acceleration;
-                for (const auto& w : plan.warnings)
-                    pv.warnings.push_back(static_cast<uint8_t>(w));
-                if (r->lateral.path_valid) {
-                    pv.path_a       = r->lateral.path_a;
-                    pv.path_b       = r->lateral.path_b;
-                    pv.path_c       = r->lateral.path_c;
-                    pv.path_x_min_m = r->lateral.path_x_min_m;
-                    pv.path_x_max_m = r->lateral.path_x_max_m;
-                    pv.path_valid   = true;
-                }
-                for (const auto& d : r->auto_speed.detections) {
-                    pv.detections.push_back({
-                        d.x1, d.y1, d.x2, d.y2, d.score, d.class_id});
-                }
-                pv.cipo = {
-                    r->cipo.valid,
-                    r->cipo.distance_m,
-                    r->cipo.velocity_ms,
-                    r->cipo.cipo_raw_found,
-                    r->cipo.cipo_raw_dist_m,
-                    r->cipo.cut_in_detected};
-
-                visualization::render_production_frame(warped, pv);
-            }
-        } else if (show_window) {
-            // No inference result yet — show raw warped frame
-            visualization::render_frame(warped, "VisionPilot", {});
+            if (show_window)
+                visualization::ProductionView::visualize(warped, *r, plan, ego_v);
         }
+        else if (show_window)
+        {
+            visualization::show_frame(warped);
+        }
+
 #ifdef ENABLE_WEBRTC
         if (webrtc) webrtc->push_frame(warped);
 #endif
