@@ -154,7 +154,7 @@ int main(int argc, char** argv)
             }
         }
 
-        if (show_window) visualization::render_frame(warped, "VisionPilot", {});
+        if (show_window) visualization::show_frame(warped, "VisionPilot");
 #ifdef ENABLE_WEBRTC
         if (webrtc) webrtc->push_frame(warped);
 #endif
