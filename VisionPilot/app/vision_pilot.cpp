@@ -156,7 +156,7 @@ int main(int argc, char** argv)
             if (show_window)
             {
                 if (debug_viz)
-                    vd::visualize(resized, *r, cfg_path, cfg.wheel_dir, pipeline.H_world2resized());
+                    vd::visualize(resized, *r, source_label(cfg.source), cfg.wheel_dir, pipeline.H_world2resized());
                 else
                     visualization::ProductionView::visualize(resized, *r, plan, ego_v, pipeline.H_resized());
             }
