@@ -47,15 +47,8 @@ public:
         float autodrive_noise_min_m = 1.5f;   // noise floor when AD is fully confident
         float autodrive_noise_m     = 8.f;    // noise ceiling at minimum AD confidence
         float cipo_noise_m          = 3.f;    // CIPO bbox-projected distance noise
-        // AutoSpeed H-matrix distances above this are treated as invalid (slopes /
-        // inclines blow up homography).  When AD confirms CIPO, discarded AS is
-        // ignored for fusion and reinit — AD is used alone.
-        float cipo_h_clamp_m = 150.f;
-        // // When AD confirms CIPO, also discard AS if it disagrees with AD by more
-        // // than this (catches H blow-ups in the 150–200 m band).
-        // float cipo_ad_disagree_m     = 60.f;
-        // // Reinitialise filter when a trusted measurement jumps this far from the
-        // // particle cloud (genuine cut-in / cut-out only).
+        // Reinitialise filter when a measurement jumps this far from the
+        // particle cloud (genuine cut-in / cut-out only).
         float reset_gate_m          = 25.f;
         bool  debug                = false;
     };
