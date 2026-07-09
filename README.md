@@ -213,11 +213,8 @@ VisionPilot
 
 ## Roadmap
 - Guide on how to run Vision Pilot with simulators
-- Guide on how to run Vision Pilot with your own camera on a real vehicle or with pre-recorded data
 - Containerization of Vision Pilot
-- Simulation integration guide
-- Automotive Hardware, Automotive 
-- Real camera and vehicle integration guide
+- Guide on how to run Vision Pilot with your own camera
 - Support for 8MP camera resolution with 120 degree horizontal field-of-view
 - Support for fusion between front-facing camera and automotive RADAR
 - Safety Verification and Automotive Standards Compliance (ISO26262, ISO8800)
