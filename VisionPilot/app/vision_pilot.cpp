@@ -1,10 +1,12 @@
 // VisionPilot — preprocess → inference → fusion → display
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <memory>
 #include <string>
 #include <thread>
 
+#include <common/types.hpp>
 #include <config/vision_pilot_config.hpp>
 #include <common/utils.hpp>
 #include <engine/onnx_engine.hpp>
@@ -155,22 +157,49 @@ int main(int argc, char** argv)
             const double raw_cte = r->lateral.path_valid
                                        ? static_cast<double>(r->lateral.raw_cte_m)
                                        : cte;
+            (void)raw_cte;
             const Plan plan = planner.compute_plan(
                 cte, epsi, kappa, ego_v, has_cipo, cipo_v, cipo_dist);
 
+            const double steer0 = plan.steering.empty() ? 0.0 : plan.steering[0];
+            bool has_fcw = false, has_aeb = false, has_lldw = false, has_rldw = false;
+            for (const Warning w : plan.warnings)
+            {
+                switch (w)
+                {
+                case Warning::FCW:  has_fcw = true; break;
+                case Warning::AEB:  has_aeb = true; break;
+                case Warning::LLDW: has_lldw = true; break;
+                case Warning::RLDW: has_rldw = true; break;
+                default: break;
+                }
+            }
+            // Feature mapping from hybrid E2E + safety guardian outputs
+            const bool acc_on = has_cipo || plan.acceleration < -0.5 || plan.acceleration > 0.2;
+            const bool lkas_on = std::fabs(steer0) > 1e-4 || std::fabs(cte) > 0.05;
+            const bool isa_ok = ego_v <= cfg.speed_limit + 0.5;
+            const char *ldw = has_lldw ? "LLDW" : (has_rldw ? "RLDW" : "OFF");
+            const bool autopilot = acc_on && lkas_on;
+
             VP_INFO(
-                "plan: tyre=%.4f rad  accel=%.3f m/s²  |  cte=%.2fm(raw=%.2fm)  |  cipo=%s  dist=%.1f m  vel=%+.2f m/s",
-                plan.steering.empty() ? 0.0 : plan.steering[0],
+                "ADAS ACC=%s FCW=%s AEB=%s LKAS=%s LDW=%s ISA=%s(%.1f/%.1f) AUTOPILOT=%s | "
+                "tyre=%.4f rad accel=%.3f m/s² cte=%.2fm cipo=%s dist=%.1fm",
+                acc_on ? "ON" : "OFF",
+                has_fcw ? "ON" : "OFF",
+                has_aeb ? "ON" : "OFF",
+                lkas_on ? "ON" : "OFF",
+                ldw,
+                isa_ok ? "OK" : "OVER",
+                ego_v,
+                cfg.speed_limit,
+                autopilot ? "ENGAGED" : "STANDBY",
+                steer0,
                 plan.acceleration,
                 cte,
-                raw_cte,
                 has_cipo ? "true" : "false",
-                cipo_dist,
-                r->cipo.velocity_ms);
+                cipo_dist);
 
-            vehicle_interface->write(
-                plan.steering.empty() ? 0.0 : plan.steering[0],
-                plan.acceleration);
+            vehicle_interface->write(steer0, plan.acceleration);
 
             if (cfg.visualization_on)
             {

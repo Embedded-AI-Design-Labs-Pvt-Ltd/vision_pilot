@@ -11,26 +11,22 @@ Run Vision Pilot end-to-end **without** a physical camera, RADAR, or MCU.
 | Steering / accel actuators | `virtual_ecu.py` receiving `CMD` on TCP `:59000` |
 | ECU / Arduino / ESP32 / Zephyr | Same Python ECU (protocol-compatible) |
 
-## Quick start
+## Quick start (automated)
 
-```powershell
-cd platforms/virtual_hw
-.\run_demo.ps1
+From the repo root (no manual Docker steps):
+
+```bat
+run_adas_demo.bat
 ```
 
-Or manually:
+This script starts Docker if needed, builds `visionpilot:cpu`, generates a synthetic
+camera + speed feed, runs VisionPilot + virtual ECU, and prints an ADAS component
+report (ACC / FCW / AEB / LKAS / LDW / ISA / Autopilot).
 
-```bash
-cd VisionPilot/docker
-docker compose -f docker-compose.demo.yml run --rm --no-deps demo-assets
-docker compose -f docker-compose.demo.yml up --abort-on-container-exit --exit-code-from visionpilot-demo visionpilot-demo virtual-ecu
-```
+Outputs:
+- `platforms/virtual_hw/last_demo_output.txt`
+- `platforms/virtual_hw/adas_demo_report.txt`
 
-Watch logs for:
-
-- `[INFO] plan: tyre=... accel=...` from VisionPilot
-- `[virtual-ecu] actuator CMD ...` from the virtual MCU
-- `[Viz] Headless mode` (no real display required)
 
 ## Generate assets only
 

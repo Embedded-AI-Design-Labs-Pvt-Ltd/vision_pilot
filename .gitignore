@@ -243,6 +243,7 @@ override.tf.json
 .terraformrc
 terraform.rc
 
-# Virtual HW demo runtime logs
+# Virtual HW demo runtime logs / reports
 platforms/virtual_hw/last_demo_output.txt
+platforms/virtual_hw/adas_demo_report.txt
 platforms/virtual_hw/demo_preview_*.jpg

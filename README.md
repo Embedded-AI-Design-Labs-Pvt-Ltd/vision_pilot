@@ -286,11 +286,17 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and [platforms/README.md](platforms
 
 ### Virtual hardware demo (no physical camera / MCU)
 
-```powershell
-cd platforms/virtual_hw
-.\run_demo.ps1
+Double-click or run (fully automated — build, synthetic camera, virtual ECU, ADAS report):
+
+```bat
+run_adas_demo.bat
 ```
 
+```powershell
+.\run_adas_demo.ps1
+```
+
+Report written to `platforms/virtual_hw/adas_demo_report.txt`.
 Details: [platforms/virtual_hw/README.md](platforms/virtual_hw/README.md)
 
 ## Contributing
