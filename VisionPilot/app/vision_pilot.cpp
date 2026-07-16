@@ -1,5 +1,6 @@
 // VisionPilot — preprocess → inference → fusion → display
 #include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <thread>
@@ -99,7 +100,14 @@ int main(int argc, char** argv)
     }
 
     // ── Initialize display ────────────────────────────────────────────────────
-    visualization::Visualization visualization({cfg.webrtc_on, cfg.webrtc_port});
+    // Headless when visualization is off, or QT/X11 is unavailable (Docker Desktop).
+    const bool headless = !cfg.visualization_on
+        || std::getenv("VISIONPILOT_HEADLESS")
+        || !std::getenv("DISPLAY");
+    visualization::Visualization visualization({cfg.webrtc_on, cfg.webrtc_port, headless});
+    if (headless) {
+        VP_INFO("[Viz] Headless mode — no GUI window");
+    }
 
     const cv::Size net_size(vm::AutoDrive::NET_W, vm::AutoDrive::NET_H);
     cv::Mat frame, warped, resized;
@@ -178,5 +186,5 @@ int main(int argc, char** argv)
         }
     }
 
-    return visualization.stop();
+    return visualization.stop() ? 0 : 1;
 }

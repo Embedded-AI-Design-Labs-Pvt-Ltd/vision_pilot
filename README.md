@@ -269,12 +269,29 @@ Input directory can be modified in the source by using `run.sh` script switch
 </details>
 
 ## Roadmap
-- Guide on how to run Vision Pilot with simulators
-- Containerization of Vision Pilot
-- Guide on how to run Vision Pilot with your own camera
+- Guide on how to run VisionPilot with simulators
+- Containerization of VisionPilot
+- Guide on how to run VisionPilot with your own camera
 - Support for 8MP camera resolution with 120 degree horizontal field-of-view
 - Support for fusion between front-facing camera and automotive RADAR
 - Safety Verification and Automotive Standards Compliance (ISO26262, ISO8800)
+
+## Multi-cloud, CI, and embedded platforms
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and [platforms/README.md](platforms/README.md) for:
+
+- Jenkins + Docker Compose
+- Terraform (AWS / GCP / Azure)
+- Raspberry Pi 5, QNX SDP, Zephyr (STM32 / NXP / TI), ESP32, Arduino vehicle gateways
+
+### Virtual hardware demo (no physical camera / MCU)
+
+```powershell
+cd platforms/virtual_hw
+.\run_demo.ps1
+```
+
+Details: [platforms/virtual_hw/README.md](platforms/virtual_hw/README.md)
 
 ## Contributing
 

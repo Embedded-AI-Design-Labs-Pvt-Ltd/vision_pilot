@@ -1,0 +1,71 @@
+# Virtual-hardware demonstration stack
+# Usage (from VisionPilot/docker):
+#   docker compose -f docker-compose.demo.yml up --build
+#
+# Provides:
+#   1) synthetic camera + ego-speed assets (one-shot generator)
+#   2) VisionPilot CPU inference + planning
+#   3) virtual MCU/ECU on TCP :59000 receiving CMD / sending SPEED
+
+services:
+  demo-assets:
+    image: python:3.12-slim
+    container_name: vp-demo-assets
+    working_dir: /opt/virtual_hw
+    entrypoint: ["bash", "-lc"]
+    command:
+      - |
+        pip install --no-cache-dir opencv-python-headless numpy &&
+        python generate_demo_assets.py --out-dir /data/demo --frames 90 --fps 10
+    volumes:
+      - demo_data:/data/demo
+      - ../../platforms/virtual_hw:/opt/virtual_hw:ro
+
+  visionpilot-demo:
+    image: visionpilot:cpu
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.cpu
+      args:
+        ENABLE_ROS2: "OFF"
+        TARGETARCH: amd64
+    container_name: visionpilot-demo
+    depends_on:
+      demo-assets:
+        condition: service_completed_successfully
+    environment:
+      - VP_TEE_VEHICLE_GATEWAY=1
+      - VP_VEHICLE_GATEWAY_HOST=0.0.0.0
+      - VP_VEHICLE_GATEWAY_PORT=59000
+      - VISIONPILOT_HEADLESS=1
+      - QT_QPA_PLATFORM=offscreen
+    ports:
+      - "59000:59000"
+    volumes:
+      - demo_data:/data/demo:ro
+      - ../config/vision_pilot.conf.demo:/usr/share/visionpilot/config/vision_pilot.conf:ro
+      - ../config/vision_pilot_test.conf.demo:/usr/share/visionpilot/config/vision_pilot_test.conf:ro
+    working_dir: /usr/share/visionpilot
+    # Keep running until the synthetic clip finishes (do not abort when assets exits)
+    restart: "no"
+
+  virtual-ecu:
+    image: python:3.12-slim
+    container_name: vp-virtual-ecu
+    depends_on:
+      - visionpilot-demo
+    volumes:
+      - ../../platforms/virtual_hw:/opt/virtual_hw:ro
+    command:
+      - python
+      - /opt/virtual_hw/virtual_ecu.py
+      - --host
+      - visionpilot-demo
+      - --port
+      - "59000"
+      - --duration
+      - "0"
+    restart: "no"
+
+volumes:
+  demo_data:

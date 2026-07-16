@@ -33,6 +33,8 @@ usage() {
     exit 1
 }
 
+APP_ARGS=()
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --gpu)
@@ -68,6 +70,11 @@ while [ $# -gt 0 ]; do
         --no-xhost)
             NO_XHOST="1"
             shift
+            ;;
+        --)
+            shift
+            APP_ARGS=("$@")
+            break
             ;;
         -h|--help)
             usage
@@ -136,7 +143,11 @@ if [ -n "$DATA_DIR" ]; then
 fi
 
 # Allow to modify config outside the container
-DOCKER_ARGS+=(-v "$(cd ../config && pwd)/vision_pilot.conf:/usr/share/visionpilot/config/vision_pilot.conf:ro")
+if [ "$VARIANT" = "cpu" ] && [ -f "$(cd ../config && pwd)/vision_pilot.conf.cpu.example" ]; then
+    DOCKER_ARGS+=(-v "$(cd ../config && pwd)/vision_pilot.conf.cpu.example:/usr/share/visionpilot/config/vision_pilot.conf:ro")
+else
+    DOCKER_ARGS+=(-v "$(cd ../config && pwd)/vision_pilot.conf:/usr/share/visionpilot/config/vision_pilot.conf:ro")
+fi
 DOCKER_ARGS+=(-v "$(cd ../config && pwd)/vision_pilot_test.conf:/usr/share/visionpilot/config/vision_pilot_test.conf:ro")
 if [ "$ENABLE_ROS2" = "ON" ]; then
     DOCKER_ARGS+=(-v "$(cd ../config && pwd)/vision_pilot_ros2.conf:/usr/share/visionpilot/config/vision_pilot_ros2.conf:ro")
@@ -159,16 +170,26 @@ if [ -n "$V4L2" ]; then
 fi
 
 if [ -z "$NO_DISPLAY" ]; then
-    DOCKER_ARGS+=(-e "DISPLAY=${DISPLAY:-}" -v /tmp/.X11-unix:/tmp/.X11-unix:rw)
-    DOCKER_ARGS+=(--device /dev/dri:/dev/dri)
-    DOCKER_ARGS+=(-e "XDG_RUNTIME_DIR=/tmp/runtime-root")
-    if [ -z "$NO_XHOST" ] && command -v xhost >/dev/null 2>&1; then
-        echo "Granting local Docker containers X11 access (xhost +local:docker) —"
-        echo "skip this with --no-xhost if you've already set it up, or --no-display"
-        echo "if you don't need the visualization window at all."
-        xhost +local:docker >/dev/null 2>&1 || true
+    if [ -d /tmp/.X11-unix ]; then
+        DOCKER_ARGS+=(-e "DISPLAY=${DISPLAY:-}" -v /tmp/.X11-unix:/tmp/.X11-unix:rw)
+        if [ -e /dev/dri ]; then
+            DOCKER_ARGS+=(--device /dev/dri:/dev/dri)
+        fi
+        DOCKER_ARGS+=(-e "XDG_RUNTIME_DIR=/tmp/runtime-root")
+        if [ -z "$NO_XHOST" ] && command -v xhost >/dev/null 2>&1; then
+            echo "Granting local Docker containers X11 access (xhost +local:docker) —"
+            echo "skip this with --no-xhost if you've already set it up, or --no-display"
+            echo "if you don't need the visualization window at all."
+            xhost +local:docker >/dev/null 2>&1 || true
+        fi
+    else
+        echo "Warning: /tmp/.X11-unix not found; forcing --no-display (typical on Windows/Docker Desktop)."
+        NO_DISPLAY="1"
     fi
 fi
+
+# Vehicle gateway TCP port for MCU bridges (Arduino/ESP32/Zephyr)
+DOCKER_ARGS+=(-p "59000:59000")
 
 echo "=================================================="
 echo " VisionPilot Docker run"
@@ -185,7 +206,9 @@ if [ -n "$DATA_DIR" ]; then
 fi
 echo "=================================================="
 
-docker run "${DOCKER_ARGS[@]}" "$TAG"
-
-echo "${DOCKER_ARGS[@]}"
+if [ ${#APP_ARGS[@]} -gt 0 ]; then
+    docker run "${DOCKER_ARGS[@]}" "$TAG" "${APP_ARGS[@]}"
+else
+    docker run "${DOCKER_ARGS[@]}" "$TAG"
+fi
 

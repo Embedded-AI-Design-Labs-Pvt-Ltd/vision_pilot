@@ -227,3 +227,22 @@ Tutorials/E2E_Models/weights/
 # Open AD Kit demo assets (downloaded via OpenADKit/download-assets.sh, not tracked)
 VisionPilot/software_defined_vehicle/OpenADKit/Test/
 VisionPilot/software_defined_vehicle/OpenADKit/**/model-weights/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Virtual HW demo runtime logs
+platforms/virtual_hw/last_demo_output.txt
+platforms/virtual_hw/demo_preview_*.jpg

@@ -1,0 +1,8 @@
+# VisionPilot demo test configuration — synthetic virtual camera
+
+source.video_realtime      = false
+source.video_loop          = false
+
+source.input_video         = /data/demo/virtual_camera.mp4
+source.input_vehicle_speed = /data/demo/virtual_speed.txt
+source.dataset             = open_lane

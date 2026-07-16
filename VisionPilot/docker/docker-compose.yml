@@ -1,0 +1,53 @@
+# VisionPilot local stack (CPU) + optional Jenkins controller
+# Usage (from this directory):
+#   docker compose up -d visionpilot
+#   docker compose --profile jenkins up -d
+#   docker compose --profile jenkins up -d jenkins
+
+services:
+  visionpilot:
+    image: visionpilot:cpu
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.cpu
+      args:
+        ENABLE_ROS2: "OFF"
+        TARGETARCH: amd64
+    container_name: visionpilot
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # WebRTC (if enabled in config)
+      - "59000:59000" # MCU vehicle gateway
+    volumes:
+      - ../config/vision_pilot.conf:/usr/share/visionpilot/config/vision_pilot.conf:ro
+      - ../config/vision_pilot_test.conf:/usr/share/visionpilot/config/vision_pilot_test.conf:ro
+      - visionpilot_data:/data:ro
+    environment:
+      - VP_VEHICLE_GATEWAY_PORT=59000
+    # Default entrypoint runs VisionPilot; override for shell debugging:
+    # command: ["sleep", "infinity"]
+
+  jenkins:
+    profiles: ["jenkins"]
+    image: jenkins/jenkins:lts-jdk21
+    container_name: visionpilot-jenkins
+    restart: unless-stopped
+    user: root
+    ports:
+      - "8081:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../../:/workspace:ro
+    environment:
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/login || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+
+volumes:
+  visionpilot_data:
+  jenkins_home:

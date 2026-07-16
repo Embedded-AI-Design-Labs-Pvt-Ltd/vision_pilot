@@ -14,6 +14,7 @@
 #include <visualization/webrtc_stream.hpp>
 
 #include "visualization/local_display.hpp"
+#include "visualization/headless_display.hpp"
 
 namespace visualization {
 
@@ -619,7 +620,12 @@ Visualization::Visualization(Config cfg)
     {
         visual_interface = std::make_unique<WebRTCStreamer>();
         static_cast<WebRTCStreamer*>(visual_interface.get())->init(cfg.webrtc_port);
-    } else
+    }
+    else if (cfg.headless)
+    {
+        visual_interface = std::make_unique<HeadlessDisplay>();
+    }
+    else
     {
         visual_interface = std::make_unique<LocalDisplay>();
     }

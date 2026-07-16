@@ -81,7 +81,9 @@ struct ProductionView {
 struct Config
 {
     bool webrtc_on = false;
-    int webrtc_port;
+    int webrtc_port = 8080;
+    // When true, skip OpenCV HighGUI / X11 (Docker Desktop, CI, virtual demo).
+    bool headless = false;
 };
 
 void init_production_assets(const std::string& icons_dir = "");
